@@ -30,6 +30,8 @@ from torchmetrics.image import (
     PeakSignalNoiseRatio,
     StructuralSimilarityIndexMeasure,
 )
+from torchmetrics.image.arniqa import ARNIQA
+from torchmetrics.multimodal.clip_iqa import CLIPImageQualityAssessment
 from torchmetrics.multimodal.clip_score import CLIPScore
 from torchmetrics.text import Perplexity
 from torchvision import transforms
@@ -107,6 +109,21 @@ def lpips_update(metric: LearnedPerceptualImagePatchSimilarity, preds: Any, targ
     metric.update(preds, target)
 
 
+def arniqa_update(metric: ARNIQA, preds: Any) -> None:
+    """
+    Update handler for ARNIQA metric.
+
+    Parameters
+    ----------
+    metric : ARNIQA instance
+        The ARNIQA metric instance.
+    preds : Any
+        The generated images tensor.
+    """
+    preds = preds.float() / 255.0
+    metric.update(preds)
+
+
 def ssim_update(metric: StructuralSimilarityIndexMeasure, preds: Any, target: Any) -> None:
     """
     Update handler for SSIM metric.
@@ -151,11 +168,7 @@ class TorchMetrics(Enum):
     """
 
     fid = (partial(FrechetInceptionDistance), fid_update, "gt_y")
-    accuracy = (
-        partial(Accuracy),
-        None,
-        "y_gt",
-    )
+    accuracy = (partial(Accuracy), None, "y_gt")
     perplexity = (partial(Perplexity), None, "y_gt")
     clip_score = (partial(CLIPScore), None, "y_x")
     precision = (partial(Precision), None, "y_gt")
@@ -163,6 +176,8 @@ class TorchMetrics(Enum):
     psnr = (partial(PeakSignalNoiseRatio), None, "pairwise_y_gt")
     ssim = (partial(StructuralSimilarityIndexMeasure), ssim_update, "pairwise_y_gt")
     lpips = (partial(LearnedPerceptualImagePatchSimilarity), lpips_update, "pairwise_y_gt")
+    arniqa = (partial(ARNIQA), arniqa_update, "y")
+    clipiqa = (partial(CLIPImageQualityAssessment), None, "y")
 
     def __init__(self, *args, **kwargs) -> None:
         self.tm = self.value[0]
@@ -271,7 +286,7 @@ class TorchMetricWrapper(StatefulMetric):
         outputs : Any
             The output data.
         """
-        metric_inputs = metric_data_processor(x, gt, outputs, self.call_type)
+        metric_inputs = metric_data_processor(x, gt, outputs, self.call_type, self.metric.device)
         self.update_fn(self.metric, *metric_inputs)
 
     def add_state(
@@ -324,10 +339,17 @@ class TorchMetricWrapper(StatefulMetric):
             The computed metric value.
         """
         result = self.metric.compute()
+
+        # Normally we have a single score for each metric for the entire dataset.
+        # For IQA metrics we have a single score per image, so we need to convert the tensor to a list.
+        if isinstance(result, Tensor):
+            result_value = result.item() if result.numel() == 1 else result.tolist()
+        else:
+            result_value = result
         return MetricResult(
             self.metric_name,
             self.__dict__.copy(),
-            result.item() if isinstance(result, Tensor) else result,
+            result_value,
         )
 
 
